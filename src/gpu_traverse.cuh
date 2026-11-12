@@ -129,12 +129,13 @@ struct GPUTraverser {
         int n_rays,
         bool allow_negative = false,
         bool allow_backward = true,
-        bool allow_forward = true
+        bool allow_forward = true,
+        cudaStream_t stream = 0
     ) {
         Rays rays = {i_ray_origs, i_ray_vecs};
         HitResults hits = {o_masks, o_dists, o_prim_idxs, o_normals, o_uvs, o_colors, o_barycentrics};
 
-        ray_query_entry<<<(n_rays + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+        ray_query_entry<<<(n_rays + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
             rays,
             get_data_pointers(),
             texture_views.empty() ? nullptr : texture_views.data().get(),
@@ -207,3 +208,22 @@ struct GPUTraverser {
         }
     }
 };
+
+// floats per training-segment record written by trace_shell_segments:
+// enter(3) exit(3) dir(3) outer_normal(3) gt_normal(3) gt_color(3) gt_t(1) gt_mask(1)
+#define SEG_REC_FLOATS 20
+
+void trace_shell_segments(
+    const GPUTraverser &outer,
+    const GPUTraverser &inner,
+    const GPUTraverser &fine,
+    const glm::vec3 *i_origs,
+    const glm::vec3 *i_dirs,
+    float *o_records,
+    bool *o_valid,
+    int n_rays,
+    int max_segments,
+    float shift_eps,
+    float no_exit_t,
+    cudaStream_t stream = 0
+);

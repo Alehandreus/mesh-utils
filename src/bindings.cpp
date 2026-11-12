@@ -156,7 +156,8 @@ NB_MODULE(mesh_utils_impl, m) {
             d_float3_batch& o_points,
             d_float3_batch& o_coords,
             d_uint_batch& o_face_idxs,
-            int n_points
+            int n_points,
+            uintptr_t stream
         ) {
             if (n_points > self.max_points_) {
                 throw std::runtime_error("n_points exceeds max_points set in constructor");
@@ -169,10 +170,35 @@ NB_MODULE(mesh_utils_impl, m) {
                 (glm::vec3 *) o_points.data(),
                 (glm::vec3 *) o_coords.data(),
                 o_face_idxs.data(),
-                n_points
+                n_points,
+                (cudaStream_t) stream
             );
-        })
+        }, nb::arg("o_points"), nb::arg("o_coords"), nb::arg("o_face_idxs"), nb::arg("n_points"), nb::arg("stream") = 0)
     ;
+
+    m.def("trace_shell_segments", [](
+            const GPUTraverser &outer,
+            const GPUTraverser &inner,
+            const GPUTraverser &fine,
+            d_float3_batch &i_origs,
+            d_float3_batch &i_dirs,
+            nb::ndarray<float, nb::shape<-1, -1, SEG_REC_FLOATS>, nb::device::cuda, nb::c_contig> &o_records,
+            d_boolN_batch &o_valid,
+            float shift_eps,
+            float no_exit_t,
+            uintptr_t stream
+        ) {
+            int n_rays = i_origs.shape(0);
+            int max_segments = o_records.shape(0);
+            if (i_dirs.shape(0) != (size_t)n_rays || o_records.shape(1) != (size_t)n_rays ||
+                o_valid.shape(0) != (size_t)max_segments || o_valid.shape(1) != (size_t)n_rays) {
+                throw std::runtime_error("trace_shell_segments: inconsistent shapes");
+            }
+            trace_shell_segments(outer, inner, fine,
+                (const glm::vec3 *) i_origs.data(), (const glm::vec3 *) i_dirs.data(),
+                o_records.data(), o_valid.data(), n_rays, max_segments, shift_eps, no_exit_t, (cudaStream_t) stream);
+        }, nb::arg("outer"), nb::arg("inner"), nb::arg("fine"), nb::arg("i_origs"), nb::arg("i_dirs"),
+           nb::arg("o_records"), nb::arg("o_valid"), nb::arg("shift_eps"), nb::arg("no_exit_t"), nb::arg("stream") = 0);
 
     nb::class_<GPUTraverser>(m, "GPUTraverser")
         .def(nb::init<const Mesh&>())
@@ -189,7 +215,8 @@ NB_MODULE(mesh_utils_impl, m) {
             d_float3_batch& o_barycentrics,
             bool allow_negative,
             bool allow_backward,
-            bool allow_forward
+            bool allow_forward,
+            uintptr_t stream
         ) {
             uint32_t n_rays = i_ray_origs.shape(0);
 
@@ -206,12 +233,14 @@ NB_MODULE(mesh_utils_impl, m) {
                 n_rays,
                 allow_negative,
                 allow_backward,
-                allow_forward
+                allow_forward,
+                (cudaStream_t) stream
             );
         }, nb::arg("i_ray_origs"), nb::arg("i_ray_vecs"), nb::arg("o_mask"), nb::arg("o_t"),
            nb::arg("o_prim_idx"), nb::arg("o_normals"), nb::arg("o_uvs"), nb::arg("o_colors"),
            nb::arg("o_barycentrics"),
-           nb::arg("allow_negative") = false, nb::arg("allow_backward") = true, nb::arg("allow_forward") = true)
+           nb::arg("allow_negative") = false, nb::arg("allow_backward") = true, nb::arg("allow_forward") = true,
+           nb::arg("stream") = 0)
         .def("ray_query_all", [](
             GPUTraverser& self,
             d_float3_batch& i_ray_origs,

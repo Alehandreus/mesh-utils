@@ -77,13 +77,13 @@ struct GPUMeshSampler {
         face_weights_prefix_sum_ = h_face_weights;
     }
 
-    void sample(glm::vec3 *out_points, glm::vec3 *out_barycentrics, uint32_t *out_face_idxs, int n_points) {
+    void sample(glm::vec3 *out_points, glm::vec3 *out_barycentrics, uint32_t *out_face_idxs, int n_points, cudaStream_t stream = 0) {
         if (n_points > max_points_) {
             std::cerr << "Error: n_points exceeds max_points_" << std::endl;
             exit(1);
         }
 
-        mesh_sample_surface_uniform_entry<<<(n_points + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+        mesh_sample_surface_uniform_entry<<<(n_points + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0, stream>>>(
             vertices_.data().get(),
             faces_.data().get(),
             face_weights_prefix_sum_.data().get(),

@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from collections import namedtuple
 from .mesh_utils_impl import Mesh, GPUTraverser, GPUMeshSampler
+from .mesh_utils_impl import trace_shell_segments as _trace_shell_segments
 
 RayQueryResult = namedtuple('RayQueryResult', ['mask', 'distance', 'normals', 'uv', 'color', 'face_idx', 'barycentrics'])
 SampleResult = namedtuple('SampleResult', ['points', 'barycentrics', 'face_indices'])
@@ -116,6 +117,7 @@ class GPURayTracer:
             allow_negative,
             allow_backward,
             allow_forward,
+            torch.cuda.current_stream().cuda_stream,
         )
 
         return RayQueryResult(mask=mask, distance=t, normals=normals, uv=uvs, color=colors, face_idx=face_idxs.long(), barycentrics=barycentrics)
@@ -153,6 +155,53 @@ class GPUSampler:
         face_indices = torch.zeros((n_points,), dtype=torch.uint32, device="cuda")
 
         # Sample
-        self.sampler.sample(points, barycentrics, face_indices, n_points)
+        self.sampler.sample(points, barycentrics, face_indices, n_points, torch.cuda.current_stream().cuda_stream)
 
         return SampleResult(points=points, barycentrics=barycentrics, face_indices=face_indices.long())
+
+
+ShellSegments = namedtuple('ShellSegments', [
+    'enter_points', 'exit_points', 'directions', 'outer_normals',
+    'gt_normals', 'gt_colors', 'gt_distance', 'gt_mask', 'valid', 'records',
+])
+
+
+def trace_shell_segments(outer, inner, fine, origins, directions, max_segments=11, shift_eps=1e-8, no_exit_t=1e-3):
+    """Walk rays through a double shell in one kernel launch.
+
+    For each ray: enter the outer shell, then repeatedly emit a segment
+    (outer entry point -> inner-shell hit or outer exit, plus the fine-mesh
+    hit along it) and re-enter the outer shell, until the fine mesh is hit
+    inside a segment, the ray escapes, or max_segments is reached.
+
+    Args:
+        outer, inner, fine: GPURayTracer for the outer shell, inner shell and fine mesh
+        origins, directions: (n_rays, 3) float32 CUDA tensors
+        max_segments: maximum number of segments per ray
+        shift_eps: distance rays are pushed forward before each re-trace
+        no_exit_t: segment length used when a ray finds no outer-shell exit
+
+    Returns:
+        ShellSegments whose fields have a leading (max_segments, n_rays) shape;
+        entry [k, i] is meaningful only where valid[k, i] is True.
+        gt_distance is the fine-mesh hit distance from the segment entry point,
+        gt_mask whether that hit lies inside the segment. `records` is the
+        packed (max_segments, n_rays, 20) buffer all other fields view into.
+    """
+    n = origins.shape[0]
+    origins = origins.contiguous().float()
+    directions = directions.contiguous().float()
+    records = torch.empty((max_segments, n, 20), dtype=torch.float32, device=origins.device)
+    valid = torch.empty((max_segments, n), dtype=torch.bool, device=origins.device)
+    _trace_shell_segments(
+        outer.bvh_traverser, inner.bvh_traverser, fine.bvh_traverser,
+        origins, directions, records, valid, shift_eps, no_exit_t,
+        torch.cuda.current_stream().cuda_stream,
+    )
+    return ShellSegments(
+        enter_points=records[..., 0:3], exit_points=records[..., 3:6],
+        directions=records[..., 6:9], outer_normals=records[..., 9:12],
+        gt_normals=records[..., 12:15], gt_colors=records[..., 15:18],
+        gt_distance=records[..., 18], gt_mask=records[..., 19] > 0.5,
+        valid=valid, records=records,
+    )
