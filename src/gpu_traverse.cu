@@ -431,6 +431,9 @@ CUDA_GLOBAL void shell_segments_entry(
     glm::vec3 enter = seg::axpy(x, d, h.t);
     glm::vec3 enter_normal = h.normal;
 
+    glm::vec3 x_prev = x;
+    float x_outer_enter_t = h.t;
+
     for (; k < max_segments && alive; k++) {
         enter = seg::axpy(enter, d, shift_eps);
 
@@ -442,10 +445,10 @@ CUDA_GLOBAL void shell_segments_entry(
         HitResult hi = seg::trace(enter, d, inner, false, true, true);
         glm::vec3 inner_p = seg::axpy(enter, d, hi.t);
 
-        HitResult hf = seg::trace(enter, d, fine, false, true, true);
+        HitResult hf = seg::trace(x_prev, d, fine, false, true, true);
         apply_material_color(hf, fine, fine_texture_views, fine_materials, fine_n_textures);
 
-        bool gt = hf.hit && (hf.t < exit_t);
+        bool gt = hf.hit && (hf.t - x_outer_enter_t < exit_t);
         bool inner_apply = hi.hit && (hi.t < exit_t);
 
         float *r = o_records + ((size_t)k * n_rays + i) * SEG_REC_FLOATS;
@@ -455,7 +458,7 @@ CUDA_GLOBAL void shell_segments_entry(
         seg::put3(r, 9, enter_normal);
         seg::put3(r, 12, hf.hit ? hf.normal : glm::vec3(0.0f));
         seg::put3(r, 15, hf.color);
-        r[18] = hf.t;
+        r[18] = hf.t - x_outer_enter_t;
         r[19] = gt ? 1.0f : 0.0f;
         o_valid[(size_t)k * n_rays + i] = true;
 
@@ -466,6 +469,8 @@ CUDA_GLOBAL void shell_segments_entry(
         alive = !gt && hf.hit && he.hit && hn.hit;
         enter = seg::axpy(from, d, hn.t);
         enter_normal = hn.normal;
+        x_prev = from;
+        x_outer_enter_t = hn.t;
     }
 
     for (; k < max_segments; k++) {
